@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Indicador de Receitas - FIA ADS</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header>
+    <h1>Indicador de Receitas</h1>
+    <p>Informe os ingredientes que voce tem e descubra o que pode preparar.</p>
+  </header>
+
+  <div class="card">
+    <label for="input-ingrediente">
+      Ingredientes disponíveis
+      <span>— adicione um por vez e pressione Enter ou virgula</span>
+    </label>
+
+    <div class="tags-container" id="tags-container" onclick="document.getElementById('input-ingrediente').focus()">
+      <input
+        type="text"
+        id="input-ingrediente"
+        placeholder="Ex.: frango, arroz, tomate..."
+        autocomplete="off"
+      />
+    </div>
+    <p class="dica">Pressione <strong>Enter</strong> ou <strong>,</strong> para adicionar. Clique no × para remover.</p>
+
+    <button id="btn-buscar" onclick="buscarReceitas()">Buscar Receitas</button>
+  </div>
+
+  <div class="card">
+    <div class="resultado-titulo">Receita sugerida pela IA</div>
+    <div id="loading" style="display:none">
+      <div class="spinner"></div>
+      <span id="loading-texto">Consultando a IA...</span>
+    </div>
+    <div id="resultado">A receita aparecerá aqui após você informar os ingredientes.</div>
+    <div class="status" id="status"></div>
+    <button id="btn-nova" onclick="novaReceita()" style="display:none">Sugerir outra receita</button>
+  </div>
+
+  <script>
+    const tags = [];
+    const jaExibidas = [];
+
+    const input = document.getElementById("input-ingrediente");
+    const container = document.getElementById("tags-container");
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === ",") {
+        e.preventDefault();
+        adicionarTag(input.value);
+      }
+      if (e.key === "Backspace" && input.value === "" && tags.length > 0) {
+        removerTag(tags.length - 1);
+      }
+    });
+
+    input.addEventListener("blur", () => {
+      if (input.value.trim()) adicionarTag(input.value);
+    });
+
+    function adicionarTag(valor) {
+      const texto = valor.replace(/,/g, "").trim();
+      if (!texto || tags.includes(texto.toLowerCase())) {
+        input.value = "";
+        return;
+      }
+      tags.push(texto.toLowerCase());
+      renderTags();
+      input.value = "";
+    }
+
+    function removerTag(index) {
+      tags.splice(index, 1);
+      renderTags();
+    }
+
+    function renderTags() {
+      const existentes = container.querySelectorAll(".tag");
+      existentes.forEach(t => t.remove());
+
+      tags.forEach((tag, i) => {
+        const el = document.createElement("div");
+        el.className = "tag";
+        el.innerHTML = `${tag} <button onclick="removerTag(${i})" title="Remover">×</button>`;
+        container.insertBefore(el, input);
+      });
+    }
+
+    function mdParaHtml(texto) {
+      const linhas = texto.split("\n");
+      let html = "";
+      let tipoLista = null;
+
+      function fecharLista() {
+        if (tipoLista === "ul") html += "</ul>";
+        if (tipoLista === "ol") html += "</ol>";
+        tipoLista = null;
+      }
+
+      function inline(t) {
+        return t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      }
+
+      for (const linha of linhas) {
+        if (linha.trim() === "---") {
+          fecharLista();
+          html += "<hr>";
+        } else if (/^## /.test(linha)) {
+          fecharLista();
+          html += `<h2>${inline(linha.slice(3))}</h2>`;
+        } else if (/^- /.test(linha)) {
+          if (tipoLista !== "ul") { fecharLista(); html += "<ul>"; tipoLista = "ul"; }
+          html += `<li>${inline(linha.slice(2))}</li>`;
+        } else if (/^\d+\. /.test(linha)) {
+          if (tipoLista !== "ol") { fecharLista(); html += "<ol>"; tipoLista = "ol"; }
+          html += `<li>${inline(linha.replace(/^\d+\. /, ""))}</li>`;
+        } else if (linha.trim() === "") {
+          fecharLista();
+        } else {
+          fecharLista();
+          html += `<p>${inline(linha)}</p>`;
+        }
+      }
+
+      fecharLista();
+      return html;
+    }
+
+    function extrairNomeReceita(texto) {
+      const match = texto.match(/^## (.+)/m);
+      return match ? match[1].trim() : null;
+    }
+
+    async function chamarAPI(msgCarregando) {
+      const resultado = document.getElementById("resultado");
+      const status = document.getElementById("status");
+      const loading = document.getElementById("loading");
+      const loadingTexto = document.getElementById("loading-texto");
+      const btnBuscar = document.getElementById("btn-buscar");
+      const btnNova = document.getElementById("btn-nova");
+
+      btnBuscar.disabled = true;
+      btnNova.style.display = "none";
+      resultado.style.display = "none";
+      loading.style.display = "flex";
+      loadingTexto.textContent = msgCarregando;
+      status.textContent = "";
+
+      try {
+        const response = await fetch("/api/receitas", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ingredientes: tags.join(", "), jaExibidas })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          resultado.textContent = "Erro " + (data.status ?? response.status) + ": " + (data.erro || "Problema desconhecido.") + (data.detalhe ? "\n\nDetalhe: " + data.detalhe : "");
+        } else {
+          resultado.innerHTML = mdParaHtml(data.receitas);
+          const nome = extrairNomeReceita(data.receitas);
+          if (nome) jaExibidas.push(nome);
+          btnNova.style.display = "block";
+          if (data.uso) {
+            status.textContent = `Tokens usados: ${data.uso.total_tokens ?? "-"} | Modelo: ${data.modelo}`;
+          }
+        }
+      } catch (err) {
+        resultado.textContent = "Erro ao conectar com o servidor local. Verifique se npm start esta rodando.";
+      } finally {
+        loading.style.display = "none";
+        resultado.style.display = "block";
+        btnBuscar.disabled = false;
+        btnBuscar.textContent = "Buscar Receitas";
+      }
+    }
+
+    async function buscarReceitas() {
+      if (input.value.trim()) adicionarTag(input.value);
+
+      if (tags.length === 0) {
+        document.getElementById("resultado").textContent = "Adicione ao menos um ingrediente antes de buscar.";
+        return;
+      }
+
+      jaExibidas.length = 0;
+      await chamarAPI("Consultando a IA com os ingredientes: " + tags.join(", ") + "...");
+    }
+
+    async function novaReceita() {
+      await chamarAPI("Buscando uma nova sugestão de receita...");
+    }
+  </script>
+
+</body>
+</html>
