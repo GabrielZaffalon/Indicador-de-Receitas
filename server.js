@@ -5,7 +5,7 @@ import "dotenv/config";
 const app = express();
 const PORT = 3000;
 const API_KEY = process.env.OPENROUTER_API_KEY;
-const MODEL = "meta-llama/llama-3.1-8b-instruct:free";
+const MODEL = "openai/gpt-oss-120b:free";
 
 if (!API_KEY || API_KEY === "sua_chave_aqui") {
   console.error("Erro: configure OPENROUTER_API_KEY no arquivo .env.");
@@ -19,6 +19,40 @@ app.use(express.static("public"));
 app.get("/api/status", (req, res) => {
   res.json({ status: "Indicador de Receitas rodando", model: MODEL });
 });
+
+function aguardar(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function chamarOpenRouter(systemPrompt, userPrompt, tentativas = 3) {
+  for (let tentativa = 1; tentativa <= tentativas; tentativa++) {
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-OpenRouter-Title": "Indicador de Receitas FIA ADS"
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_completion_tokens: 900
+      })
+    });
+
+    if (response.status === 429 && tentativa < tentativas) {
+      await aguardar(tentativa * 2000);
+      continue;
+    }
+
+    return response;
+  }
+}
 
 app.post("/api/receitas", async (req, res) => {
   try {
@@ -54,27 +88,19 @@ Sugira apenas 1 receita. Priorize a que melhor aproveite os ingredientes informa
 
     const userPrompt = `Tenho os seguintes ingredientes disponiveis: ${ingredientes}. Que receita posso fazer?${exclusao}`;
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000",
-        "X-OpenRouter-Title": "Indicador de Receitas FIA ADS"
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        temperature: 0.7,
-        max_completion_tokens: 900
-      })
-    });
+    const response = await chamarOpenRouter(systemPrompt, userPrompt);
 
     if (!response.ok) {
       const detalhe = await response.text();
+
+      if (response.status === 429) {
+        return res.status(502).json({
+          erro: "O modelo gratuito esta sobrecarregado no momento. Aguarde um pouco e tente novamente.",
+          status: response.status,
+          detalhe
+        });
+      }
+
       return res.status(502).json({
         erro: "Erro ao consultar o OpenRouter.",
         status: response.status,
